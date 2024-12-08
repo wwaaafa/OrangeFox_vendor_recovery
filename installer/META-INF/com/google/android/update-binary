@@ -1,0 +1,226 @@
+#!/sbin/sh
+
+# ******************************************************
+# Description: 	Installer script for OrangeFox Recovery
+# Author: 	DarthJabba9
+# Date: 	TODAY
+# ******************************************************
+
+# the target device
+TARGET_DEVICE="mido"
+
+# the display screen
+SCREEN=/proc/self/fd/$2
+
+# the current zip installer
+ZIPFILE="$3"
+
+# the zip extract directory
+EX_DIR=/tmp/DJ9
+
+# ui_print "<message>" ["<message 2>" ...]
+ui_print() {
+  until [ ! "$1" ]; do
+    echo -e "ui_print $1\nui_print" >> $SCREEN
+    shift
+  done
+}
+
+# is_mounted <partition>
+is_mounted() {
+  case `mount` in
+    *" $1 "*) echo 1;;
+    *) echo 0;;
+  esac;
+}
+
+# package_extract_file <file> <destination_file>
+old_package_extract_file() { 
+   mkdir -p "$(dirname "$2")"
+   unzip -o "$ZIPFILE" "$1" -p > "$2" 
+}
+
+# package_extract_dir <dir> <destination_dir>
+old_package_extract_dir() {
+  for entry in $(unzip -l "$ZIPFILE" "$1/*" 2>/dev/null | tail -n+4 | grep -o " $1.*$" | cut -c2-); do
+    outfile=$(echo "$entry" | sed "s|${1}|${2}|")
+    mkdir -p "$(dirname "$outfile")"
+    unzip -o "$ZIPFILE" "$entry" -p > "$outfile"
+  done;
+}
+
+package_extract_dir() {
+   if [ -d $EX_DIR/$1 ]; then
+      cp -a $EX_DIR/$1/* $2
+   else
+      ui_print "Invalid directory: $1"   
+   fi
+} 
+
+package_extract_file() {
+   if [ -e $EX_DIR/$1 ]; then
+      dd if=$EX_DIR/$1 of=$2
+   else
+      ui_print "Invalid file: $1"   
+   fi 
+}
+
+# getprop <property>
+getprop() { 
+   [ -e /sbin/getprop ] && /sbin/getprop $1 || grep "^$1" /default.prop | head -n1 | cut -d= -f2
+}
+
+# abort [<message>]
+abort() { 
+   ui_print "$*"
+   exit 1
+}
+
+# check if we have specified a target device and whether this is it
+CheckRequirements() {
+PRODUCT_DEVICE=$(getprop "ro.product.device")
+   if [ "$PRODUCT_DEVICE" = "$TARGET_DEVICE" ]; then
+     ui_print "- OrangeFox (RELEASE_VER) for $TARGET_DEVICE ..."
+   else
+     abort "E3004: This package is for $TARGET_DEVICE. This device ($PRODUCT_DEVICE) is not supported."
+   fi
+}
+
+# mount everything we might need
+MountThemAll() {
+local F=$(is_mounted "/system")
+    	[ "$F" = "0" ] && mount /system
+	mount -o rw,remount /system
+	mount -o rw,remount /system /system
+    	
+    	F=$(is_mounted "/vendor")
+    	if [ "$F" = "0" ]; then
+    	    mount /vendor
+    	    F=$(is_mounted "/vendor")
+    	    [ "$F" = "1" ] && {
+		mount -o rw,remount /vendor
+		mount -o rw,remount /vendor /vendor
+    	    }
+        else
+	    mount -o rw,remount /vendor
+	    mount -o rw,remount /vendor /vendor
+    	fi
+	mount -o rw,remount /
+	mount -o rw,remount / /
+} 
+
+# unmount everything that we mounted
+UnMountThemAll() {
+	umount /system
+    	local F=$(is_mounted "/vendor")
+    	[ "$F" = "1" ] && umount /vendor
+}
+
+Process_StockRecovery() {
+local RF=$1
+   # ui_print "- File: [$RF]"
+   if [ -f $RF ]; then
+      ui_print "- Processing file: $RF"
+      cp -af $RF $RF.bak
+      rm -f $RF
+   fi
+}
+
+Disable_stock_recovery_overwrites() {
+local ToRename="/system/bin/install-recovery.sh
+/system/etc/install-recovery.sh
+/system/etc/recovery-resource.dat
+/system/vendor/bin/install-recovery.sh
+/system/vendor/etc/install-recovery.sh
+/system/vendor/etc/recovery-resource.dat
+/system/recovery-from-boot.p
+/vendor/bin/install-recovery.sh
+/vendor/etc/install-recovery.sh
+/vendor/etc/recovery-resource.dat"
+
+   for i in $ToRename
+   do
+     Process_StockRecovery "$i"
+   done
+}
+
+# unzip the installer package into /tmp
+Unzip_Installer_Package() {
+   cd /tmp
+   mkdir -p $EX_DIR
+   cd $EX_DIR
+   unzip -o "$ZIPFILE"
+}
+
+# main function
+Main() {
+	ui_print "*************************************"
+	ui_print "*** |OrangeFox Recovery Project|  ***"
+	ui_print "***   |By The OrangeFox Team|     ***"
+	ui_print "*************************************"
+	ui_print " "
+
+# check if we have any device requirements
+	CheckRequirements
+
+# extract the zip installer
+	Unzip_Installer_Package
+	
+# Install the recovery image
+	ui_print "- Installing OrangeFox recovery ..."
+	package_extract_file "recovery.img" "/dev/block/bootdevice/by-name/recovery"
+
+# Install /sdcard stuff
+	ui_print "- Installing FoxFiles on the internal SD ..."
+	local internal_SD="/sdcard"
+	local F=$(is_mounted "$internal_SD")
+	[ "$F" = "0" ] && mount $internal_SD
+	F=$(is_mounted "$internal_SD")
+	[ "$F" = "0" ] && {
+	   internal_SD="/data/media/0"
+	   mount $internal_SD
+	}	
+	#ui_print "- internal_SD=$internal_SD"
+   	rm -rf "/$internal_SD/Fox/FoxFiles"
+   	rm -f "/$internal_SD/Fox/.wolfs"
+   	package_extract_dir "sdcard" "$internal_SD"
+   	[ "$internal_SD" = "/sdcard" ] &&  umount "$internal_SD"
+
+# Prevent the stock recovery from replacing this recovery
+	ui_print "- Disabling stock recovery overwrites"
+	
+	MountThemAll
+	
+	Disable_stock_recovery_overwrites
+	
+	UnMountThemAll
+
+# Finish and reboot
+	ui_print "- Finished installing OrangeFox!" 
+	ui_print "- Extra files are in $internal_SD/Fox/"
+	ui_print " "
+	ui_print " >> Rebooting to Recovery in 5 seconds ..."
+	sleep 1
+	ui_print "-5s...."
+	sleep 1
+	ui_print "-4s...."
+	sleep 1
+	ui_print "-3s..."
+	sleep 1
+	ui_print "-2s.."
+	sleep 1
+	ui_print "-1s."
+	sleep 1
+	ui_print " "
+	ui_print "- Rebooting to Recovery now ..."
+	reboot recovery
+
+# if the reboot command fails, try this instead
+	sleep 3
+	killall recovery
+
+} # end Main(); 
+
+# --
+Main
+# --
